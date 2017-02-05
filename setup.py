@@ -1,7 +1,7 @@
 from distutils.core import setup
 
 setup(
-    name='sqlitequeue',
+    name='sqlite_queue',
     version='0.01',
     packages=[''],
     url='',

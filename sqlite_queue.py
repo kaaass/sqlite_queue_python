@@ -3,6 +3,7 @@ import sqlite3
 import queue
 import threading
 import time
+import re
 
 __peewee__ = True
 try:
@@ -17,8 +18,14 @@ except ImportError:
 """
 
 __author__ = "KAAAsS"  # ←超帅
-__version__ = '0.0.1'
+__version__ = '0.1.0'
 __license__ = "GPL v2"
+
+_OPERATOR_MAPPING = {
+    "!": "!=",
+    "~": "LIKE",
+    "!~": "NOT LIKE"
+}
 
 
 class SqliteQueue(threading.Thread):
@@ -95,6 +102,363 @@ class SqliteQueue(threading.Thread):
             raise SqliteQueueError('Illegal param! "pw_query" must be peewee.Query!')
         self.register_execute(pw_query.sql()[0], callback=callback)
 
+    def select(self, table):
+        """
+        构建select语句
+        :param table:
+        :return:
+        """
+        return SqlQuery(table, obj_queue=self)
+
+
+class SqlQuery:
+    """
+    简单的sql命令封装
+    """
+
+    def __init__(self, table, method='SELECT', params=None, obj_queue=None):
+        self._queue = obj_queue
+        self._sql = {'table': table, 'method': method, 'distinct': False}
+        self._params = params
+        self._data = None
+
+    def execute(self, command, data=None):
+        self._sql = command
+        self._data = data
+        return self
+
+    def _has_commanded(self):
+        """
+        检查是否执行过execute方法
+        :return:
+        """
+        if isinstance(self._sql, str):
+            raise Exception('This method cannot be invoked after using method "execute"!')
+
+    def table(self, table):
+        """
+        设定操作的目标表
+        :param table:
+        :return:
+        """
+        self._has_commanded()
+        self._sql['table'] = table
+        return self
+
+    def field(self, *args):
+        """
+        表示操作对象的字段
+        :param args:
+        :return:
+        """
+        self._has_commanded()
+        result = ''
+        if len(args) < 1:
+            raise ValueError('Method "field" needs at least one param!')
+        elif len(args) == 1:
+            args = args[0]
+            if isinstance(args, str):  # 若为字符串，则视为直接输入SQL格式
+                result = args + ' '  # 空格占位哈哈哈哈，我有毒
+            elif isinstance(args, dict):  # 若为字典，则可能有as
+                if len(args) < 1:
+                    raise ValueError('Illegal length of param for method "field"!')
+                for k, v in args.items():
+                    if v is None:
+                        result += '`%s`,' % str(k)
+                    else:
+                        result += '`%s` AS %s,' % (str(k), str(v))
+            else:
+                raise ValueError('Illegal param for method "field"!')
+        else:
+            for v in args:  # 直接拼接即可
+                result += '`%s`,' % str(v)
+        self._sql['field'] = result[:-1]
+        return self
+
+    def where(self, *args):
+        """
+        设置where条件，重复调用会叠加并使用AND连接
+        :param args:
+        :return:
+        """
+        self._has_commanded()
+        cond = _parse_condition(*args)
+        if 'where' in self._sql:  # 已经存在where了，拼接之
+            self._sql['where'][0] += ' AND ' + cond[0]  # 拼接条件语句
+            self._sql['where'][1] += cond[1]  # 拼接参数
+        else:
+            self._sql['where'] = cond
+        return self
+
+    def or_where(self, *args):
+        """
+        设置where条件，重复调用会叠加并使用OR连接
+        :param args:
+        :return:
+        """
+        self._has_commanded()
+        if 'where' in self._sql:  # 已经存在where了，拼接之
+            cond = _parse_condition(*args)
+            self._sql['where'][0] += ' OR ' + cond[0]  # 拼接条件语句
+            self._sql['where'][1] += cond[1]  # 拼接参数
+        else:  # 不存在和where方法相同
+            self.where(*args)
+        return self
+
+    def order(self, *args):
+        """
+        设置排序字段
+        :param args:
+        :return:
+        """
+        self._has_commanded()
+        result = ''
+        if len(args) < 1:
+            raise ValueError('Method "order" needs at least one param!')
+        elif len(args) == 1 and _is_sql(args[0]):  # SQL格式
+            self._sql['order'] = args[0]
+            return self
+        elif isinstance(args[0], dict):  # 含排序方式
+            for k, v in args[0].items():
+                if v is None:
+                    result += '`%s`,' % str(k)
+                else:
+                    result += '`%s` %s,' % (str(k), str(v))
+        else:
+            for v in args:
+                result += '`%s`,' % str(v)
+        self._sql['order'] = result[:-1]
+        return self
+
+    def group(self, *args):
+        """
+        设置结果分组(GROUP BY)
+        :param args:
+        :return:
+        """
+        self._has_commanded()
+        result = ''
+        if len(args) < 1:
+            raise ValueError('Method "order" needs at least one param!')
+        elif len(args) == 1 and _is_sql(args[0]):  # SQL格式
+            self._sql['group'] = args[0]
+            return self
+        else:
+            for v in args:
+                result += '`%s`,' % str(v)
+        self._sql['group'] = result[:-1]
+        return self
+
+    def limit(self, start, num):
+        """
+        设置返回条数限制
+        :param start: 开始位置
+        :param num: 返回条数
+        :return:
+        """
+        self._has_commanded()
+        # 参数检查
+        if int(start) < 0:
+            raise ValueError('The value of param "start" must be positive number!')
+        if int(num) < 1:
+            raise ValueError('The value of param "num" must bigger than zero!')
+        self._sql['limit'] = ['?,?', [start, num]]
+        return self
+
+    def page(self, index, num):
+        """
+        返回结果分页
+        :param index: 页码，1开始
+        :param num: 单页结果数
+        :return:
+        """
+        self.limit((int(index) - 1) * int(num), int(num))
+        return self
+
+    def having(self, *args):
+        """
+        设置having条件，重复调用会叠加并使用AND连接
+        :param args:
+        :return:
+        """
+        self._has_commanded()
+        cond = _parse_condition(*args)
+        if 'having' in self._sql:  # 已经存在where了，拼接之
+            self._sql['having'][0] += ' AND ' + cond[0]  # 拼接条件语句
+            self._sql['having'][1] += cond[1]  # 拼接参数
+        else:
+            self._sql['having'] = cond
+        return self
+
+    def or_having(self, *args):
+        """
+        设置having条件，重复调用会叠加并使用OR连接
+        :param args:
+        :return:
+        """
+        self._has_commanded()
+        if 'having' in self._sql:  # 已经存在where了，拼接之
+            cond = _parse_condition(*args)
+            self._sql['having'][0] += ' OR ' + cond[0]  # 拼接条件语句
+            self._sql['having'][1] += cond[1]  # 拼接参数
+        else:  # 不存在和where方法相同
+            self.having(*args)
+        return self
+
+    def distinct(self, is_distinct):
+        """
+        设置是否返回重复值
+        :param is_distinct: 是否返回重复值
+        :type is_distinct: bool
+        :return:
+        """
+        self._has_commanded()
+        self._sql['distinct'] = bool(is_distinct)
+        return self
+
+    def get_sql(self):
+        """
+        生成sql语句
+        :return: 元组，若长度为2则包含参数
+        """
+        if isinstance(self._sql, str):
+            if self._data is None:
+                return self._sql,
+            else:
+                return self._sql, self._data
+        # select语句顺序: SELECT-field-from-where-order-group-limit-having
+        if self._sql['method'].upper() == 'SELECT':  # 生成SELECT语句
+            if 'field' not in self._sql:
+                field = '*'
+            else:
+                field = self._sql['field']
+            if self._sql['distinct']:
+                distinct = 'DISTINCT '
+            else:
+                distinct = ''
+            sql = 'SELECT %s%s FROM %s' % (distinct, field, self._sql['table'])
+            data = []
+            if 'where' in self._sql:
+                sql += ' WHERE ' + self._sql['where'][0]
+                data += self._sql['where'][1]
+            if 'order' in self._sql:
+                sql += ' ORDER BY ' + self._sql['order']
+            if 'group' in self._sql:
+                sql += ' GROUP BY ' + self._sql['group']
+            if 'limit' in self._sql:
+                sql += ' LIMIT ' + self._sql['limit'][0]
+                data += self._sql['limit'][1]
+            if 'having' in self._sql:
+                sql += ' HAVING ' + self._sql['having'][0]
+                data += self._sql['having'][1]
+            self._data = tuple(data)
+            return sql, self._data
+        else:
+            pass  # TODO 加入 INSERT, UPDATE, DELETE, TRUNCATE, DROP
+
+    def register(self, callback=None):
+        """
+        注册为SqliteQueue的任务
+        :param callback: 回调函数
+        :return:
+        """
+        if self._queue is None or not isinstance(self._queue, SqliteQueue):
+            raise Exception("This object wasn't belong to a SqliteQueue!")
+        self._queue.register_execute(self.get_sql()[0], self._data, callback)
+
 
 class SqliteQueueError(Exception):
     pass
+
+
+def _is_sql(obj):
+    """
+    最简单的sql语句判断，别乱用哦！
+    :param obj:
+    :return:
+    """
+    return isinstance(obj, str) and ('`' in str(obj) or ',' in str(obj))
+
+
+def _get_operator(string):
+    """
+    解析字符串获得操作符和字段名
+    :param string:
+    :return:
+    """
+    o = re.findall("^([a-zA-Z_]+)(?:\[(.+)\])?$", string)
+    if len(o) < 1:  # 匹配失败
+        raise Exception('Illegal syntax of expression: ' + string)
+    o = list(o[0])  # 原先是tuple
+    if len(o[1]) < 1:  # 未填写操作符，默认等号
+        o[1] = '='
+    if o[1] in _OPERATOR_MAPPING:
+        o[1] = _OPERATOR_MAPPING[o[1]]
+    return o
+
+
+def _parse_condition(*args):
+    """
+    解析条件语句
+    :param args:
+    :return:
+    """
+    conj = 'AND'
+    if len(args) < 1:
+        raise ValueError('This method need at least one param!')
+    elif len(args) == 1 and isinstance(args[0], str):  # SQL格式
+        return [args[0], None]
+    elif len(args) == 2 and isinstance(args[0], str) and isinstance(args[1], tuple):  # SQL格式带参数
+        return list(args)
+    elif len(args) == 2 and isinstance(args[0], str):  # 单行，=号
+        cond = {args[0]: args[1]}
+    elif len(args) == 3 and isinstance(args[0], str):  # 单行
+        cond = {'%s[%s]' % (args[0], str(args[1])): args[2]}
+    elif isinstance(args[0], dict):
+        cond = args[0]
+        if len(args) == 2 and isinstance(args[1], str):
+            conj = args[1]
+    else:
+        raise ValueError('Illegal param! ' + str(args))
+    return _parse_dict_condition(cond, conj)
+
+
+def _parse_dict_condition(obj, conj='AND'):
+    """
+    由字典
+    :param obj: 字典对象
+    :param conj: 连接词
+    :return:
+    """
+    if conj not in ['AND', 'OR']:  # 检查连接词是否合法
+        raise ValueError('Unknown conjunction: ' + conj)
+    cond = ''
+    value_set = []  # 存放预编译用参数
+    for (k, v) in obj.items():
+        if isinstance(v, dict):  # 解析嵌套
+            op = re.findall('\((.+)\).?', k)
+            if len(op) < 1:
+                raise Exception('Illegal syntax of expression: ' + k)
+            inner = _parse_dict_condition(v, op[0])  # 递归解决此类嵌套
+            cond += ' %s (%s)' % (conj, inner[0])
+            value_set += inner[1]
+            continue
+        o = _get_operator(k)
+        if isinstance(v, list):
+            not_ = ''
+            if o[1] in ['<>', '><']:  # 为BETWEEN
+                if not len(v) == 2:
+                    raise Exception('Illegal length for value: ' + str(v))
+                if o[1] == '<>':
+                    not_ = 'NOT '
+                cond += ' %s (`%s` %sBETWEEN ? AND ?)' % (conj, o[0], not_)
+            else:  # 为IN
+                if o[1] == '!=':  # 不用判断!，已经被转为!=
+                    not_ = 'NOT '
+                cond += ' %s `%s` %sIN (' % (conj, o[0], not_) \
+                        + ('?,' * len(v))[:-1] + ')'
+            value_set += v
+        else:
+            cond += " %s `%s` %s ?" % (conj, o[0], o[1])
+            value_set.append(v)
+    return [cond[len(conj) + 2:], value_set]
