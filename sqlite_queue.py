@@ -100,12 +100,13 @@ class SqliteQueue(threading.Thread):
             raise SqliteQueueError('Module "peewee" have not been installed.')
         if not isinstance(pw_query, peewee.Query):
             raise SqliteQueueError('Illegal param! "pw_query" must be peewee.Query!')
-        self.register_execute(pw_query.sql()[0], callback=callback)
+        sql = pw_query.sql()
+        self.register_execute(sql[0], tuple(sql[1]), callback=callback)
 
     def select(self, table):
         """
         构建select语句
-        :param table:
+        :param table: 目标表
         :return:
         """
         return SqlQuery(table, obj_queue=self)
