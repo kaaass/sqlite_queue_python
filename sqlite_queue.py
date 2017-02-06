@@ -119,7 +119,7 @@ class SqliteQueue(threading.Thread):
         """
         return SqlQuery(table, obj_queue=self)
 
-    def insert(self, table, data=None):  # TODO 支持插入多组数据
+    def insert(self, table, data=None):
         """
         构建insert语句
         :param table: 目标表
@@ -152,6 +152,15 @@ class SqliteQueue(threading.Thread):
         :return:
         """
         return SqlQuery(table, method='DROP', obj_queue=self)
+
+    def create(self, table, params=None):
+        """
+        创建表
+        :param table: 目标表
+        :param params: 包含字段
+        :return:
+        """
+        return SqlQuery(table, method='CREATE', params=params, obj_queue=self)
 
 
 class SqlQuery:
@@ -404,17 +413,22 @@ class SqlQuery:
             if 'having' in self._sql:
                 sql += ' HAVING ' + self._sql['having'][0]
                 data += self._sql['having'][1]
-            self._data = tuple(data)
-            return sql, self._data
+            return sql, tuple(data)
         elif method == 'INSERT':  # 生成INSERT语句
-            if not isinstance(self._params, dict) or len(self._params) < 1:
+            if isinstance(self._params, dict) and len(self._params) > 0:
+                dic = [self._params]
+            elif isinstance(self._params, list) and len(self._params) > 0:
+                dic = self._params
+            else:
                 raise ValueError('Illegal value for param!')
-            sql = 'INSERT %s INTO (' % self._sql['table']
-            for k in self._params.keys():
-                sql += '`%s`,' % k
-            sql = sql[:-1] + ') VALUES (' + ('?,'*len(self._params))[:-1] + ')'
-            self._data = tuple(self._params.values())
-            return sql, self._data
+            result = []
+            for v in dic:
+                sql = 'INSERT INTO %s (' % self._sql['table']
+                for k in v.keys():
+                    sql += '`%s`,' % k
+                sql = sql[:-1] + ') VALUES (' + ('?,' * len(v))[:-1] + ')'
+                result.append((sql, tuple(v.values())))
+            return result
         elif method == 'UPDATE':  # 生成UPDATE语句
             if not isinstance(self._params, dict) or len(self._params) < 1:
                 raise ValueError('Illegal value for param!')
@@ -427,20 +441,23 @@ class SqlQuery:
             if 'where' in self._sql:
                 sql += ' WHERE ' + self._sql['where'][0]
                 data += self._sql['where'][1]
-            self._data = tuple(data)
-            return sql, self._data
+            return sql, tuple(data)
         elif method == 'DELETE':  # 生成DELETE语句
             sql = 'DELETE FROM %s' % self._sql['table']
             data = []
             if 'where' in self._sql:
                 sql += ' WHERE ' + self._sql['where'][0]
                 data += self._sql['where'][1]
-            self._data = tuple(data)
-            return sql, self._data
+            return sql, tuple(data)
         elif method == 'TRUNCATE':
             raise Exception('Method "TRUNCATE" wasn\'t support in sqlite!')
         elif method == 'DROP':  # 生成DROP语句
             return 'DROP TABLE ' + self._sql['table'],
+        elif method == 'CREATE':
+            sql = 'CREATE TABLE `%s`(' % self._sql['table']
+            for k, v in self._params.items():
+                sql += '%s %s,' % (k, v)
+            return sql[:-1] + ')',
         else:
             raise Exception("Unknown method %s!" % method)
 
@@ -452,7 +469,12 @@ class SqlQuery:
         """
         if self._queue is None or not isinstance(self._queue, SqliteQueue):
             raise Exception("This object wasn't belong to a SqliteQueue!")
-        self._queue.register_execute(self.get_sql()[0], self._data, callback)
+        sql = self.get_sql()
+        if not isinstance(sql, list):
+            sql = [sql]
+        for v in sql:
+            self._queue.register_execute(*v, callback=callback)
+        return self
 
 
 class SqliteQueueError(Exception):
