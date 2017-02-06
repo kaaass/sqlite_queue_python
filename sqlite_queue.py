@@ -119,6 +119,40 @@ class SqliteQueue(threading.Thread):
         """
         return SqlQuery(table, obj_queue=self)
 
+    def insert(self, table, data=None):  # TODO 支持插入多组数据
+        """
+        构建insert语句
+        :param table: 目标表
+        :param data: 插入的数据(dict)
+        :return:
+        """
+        return SqlQuery(table, method='INSERT', params=data, obj_queue=self)
+
+    def update(self, table, data=None):
+        """
+        构建update语句
+        :param table: 目标表
+        :param data: 插入的数据(dict)
+        :return:
+        """
+        return SqlQuery(table, method='UPDATE', params=data, obj_queue=self)
+
+    def delete(self, table):
+        """
+        构建delete语句
+        :param table: 目标表
+        :return:
+        """
+        return SqlQuery(table, method='UPDATE', obj_queue=self)
+
+    def drop(self, table):
+        """
+        构建drop语句
+        :param table: 目标表
+        :return:
+        """
+        return SqlQuery(table, method='DROP', obj_queue=self)
+
 
 class SqlQuery:
     """
@@ -325,6 +359,15 @@ class SqlQuery:
         self._sql['distinct'] = bool(is_distinct)
         return self
 
+    def data(self, data):
+        """
+        增加命令所需数据。如INSERT, UPDATE。
+        :param data:
+        :return:
+        """
+        self._params = data
+        return self
+
     def get_sql(self):
         """
         生成sql语句
@@ -335,8 +378,9 @@ class SqlQuery:
                 return self._sql,
             else:
                 return self._sql, self._data
+        method = self._sql['method'].upper()
         # select语句顺序: SELECT-field-from-where-order-group-limit-having
-        if self._sql['method'].upper() == 'SELECT':  # 生成SELECT语句
+        if method == 'SELECT':  # 生成SELECT语句
             if 'field' not in self._sql:
                 field = '*'
             else:
@@ -362,8 +406,43 @@ class SqlQuery:
                 data += self._sql['having'][1]
             self._data = tuple(data)
             return sql, self._data
+        elif method == 'INSERT':  # 生成INSERT语句
+            if not isinstance(self._params, dict) or len(self._params) < 1:
+                raise ValueError('Illegal value for param!')
+            sql = 'INSERT %s INTO (' % self._sql['table']
+            for k in self._params.keys():
+                sql += '`%s`,' % k
+            sql = sql[:-1] + ') VALUES (' + ('?,'*len(self._params))[:-1] + ')'
+            self._data = tuple(self._params.values())
+            return sql, self._data
+        elif method == 'UPDATE':  # 生成UPDATE语句
+            if not isinstance(self._params, dict) or len(self._params) < 1:
+                raise ValueError('Illegal value for param!')
+            sql = 'UPDATE %s SET ' % self._sql['table']
+            data = []
+            for k in self._params.keys():
+                sql += '`%s`=?,' % k
+            sql = sql[:-1]  # 去除多余逗号
+            data += self._params.values()
+            if 'where' in self._sql:
+                sql += ' WHERE ' + self._sql['where'][0]
+                data += self._sql['where'][1]
+            self._data = tuple(data)
+            return sql, self._data
+        elif method == 'DELETE':  # 生成DELETE语句
+            sql = 'DELETE FROM %s' % self._sql['table']
+            data = []
+            if 'where' in self._sql:
+                sql += ' WHERE ' + self._sql['where'][0]
+                data += self._sql['where'][1]
+            self._data = tuple(data)
+            return sql, self._data
+        elif method == 'TRUNCATE':
+            raise Exception('Method "TRUNCATE" wasn\'t support in sqlite!')
+        elif method == 'DROP':  # 生成DROP语句
+            return 'DROP TABLE ' + self._sql['table'],
         else:
-            pass  # TODO 加入 INSERT, UPDATE, DELETE, TRUNCATE, DROP
+            raise Exception("Unknown method %s!" % method)
 
     def register(self, callback=None):
         """
