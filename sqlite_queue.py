@@ -62,6 +62,8 @@ class SqliteQueue(threading.Thread):
             self._cursor.execute(task['execute'])
         self._conn.commit()
         # 取回调函数的参数
+        if task['callback'] is None:
+            return
         paras = inspect.getargspec(task['callback'])[0]
         kwargs = {}
         for param in paras:
