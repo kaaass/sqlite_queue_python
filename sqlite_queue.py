@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 import re
+import inspect
 
 __peewee__ = True
 try:
@@ -14,7 +15,7 @@ except ImportError:
 """基于python实现的sqlite队列，方便的处理sqlite并发。
 
 讲道理，写这个库的人并不会写python。SqliteQueue是继承了threading.Thread的线程，并且维护了一个向sqlite请求的队列。
-回调函数参数：lst_row（整数，最后一行行号）、data（数据，如select会有返回）
+回调函数参数：lst_rowid（整数，最后一行行号）、data（数据，如select会有返回）、rowcount（行数）
 """
 
 __author__ = "KAAAsS"  # ←超帅
@@ -60,13 +61,18 @@ class SqliteQueue(threading.Thread):
         else:
             self._cursor.execute(task['execute'])
         self._conn.commit()
-        lst_id = self._cursor.lastrowid
-        if lst_id is None:
-            lst_id = -1  # 防止传None
-        kwargs = {  # 拼接回调参数
-            'lst_row': lst_id,
-            'data': self._cursor.fetchall()
-        }
+        # 取回调函数的参数
+        paras = inspect.getargspec(task['callback'])[0]
+        kwargs = {}
+        for param in paras:
+            if param == 'data':
+                kwargs['data'] = self._cursor.fetchall()
+            elif param == 'rowcount':
+                kwargs['rowcount'] = self._cursor.rowcount
+            elif param == 'lst_rowid':
+                kwargs['lst_rowid'] = self._cursor.lastrowid
+            else:
+                kwargs[param] = None
         task['callback'](**kwargs)  # 回调
 
     def register_execute(self, execute, data=None, callback=None):
