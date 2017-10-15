@@ -40,6 +40,14 @@ queue.select('stocks').where('price', '>=', 30) \
                         .register(callback=lambda lst_row, data: print(data))
 ```
 
+## Installation
+
+For installation, just run:
+
+```python
+python setup.py install
+```
+
 ## TODO List
 
 - 完成：_实现简单的SQL语句拼接_
