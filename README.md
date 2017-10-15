@@ -42,9 +42,21 @@ queue.select('stocks').where('price', '>=', 30) \
 
 ## Installation
 
-For installation, just run:
+For python3, just run:
 
-```python
+```
+pip3 install sqlite_queue
+```
+
+for other condition:
+
+```
+pip install sqlite_queue
+```
+
+or you could use setup.py.
+
+```
 python setup.py install
 ```
 
